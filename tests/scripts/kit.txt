@@ -1,0 +1,43 @@
+# Drumwelt: play the first rock, find and keep leaves, a stick and a rock, then PLAY: the cycles run
+200 keys 0x80
+500 keys 0
+900 keys 0x1
+1200 keys 0
+1500 keys 0x80000
+1800 keys 0
+2000 shot
+2100 keys 0x4000000
+2200 keys 0
+2300 btn 13
+2500 keys 0x80
+2800 keys 0
+3100 keys 0x80000
+3400 keys 0
+3500 shot
+3600 btn 9
+3800 keys 0x2000000
+3900 keys 0
+4000 btn 13
+4200 keys 0x80
+4500 keys 0
+4800 keys 0x80000
+5100 keys 0
+5200 shot
+5300 btn 9
+5500 keys 0x1000000
+5600 keys 0
+5700 btn 13
+5900 keys 0x80
+6400 keys 0
+6500 shot
+6600 btn 9
+6800 btn 12
+9000 shot
+9100 btn 10
+10500 shot
+11000 btn 7
+12500 shot
+13000 btn 4
+13500 shot
+15000 btn 12
+18000 end
