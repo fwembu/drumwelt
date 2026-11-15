@@ -686,7 +686,7 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
     p.att = (uint32_t)att_ms * 2756u / 1000u;
     p.hold = (uint32_t)HLD_MS[o->hld] * 2756u / 1000u;
     for (v = 0; v < NV; v++) {                  /* a silent voice, else the oldest */
-        uint32_t score = voice[v].stage ? 0x80000000u + voice[v].age : 0u;
+        uint32_t score = voice[v].stage || voice[v].trig != voice[v].tseen ? 0x80000000u + voice[v].age : 0u;   /* (a hit the audio has not taken yet counts: two hits at once get a voice each) */
         if (score < best) { best = score; pick = v; }
     }
     voice[pick].nx = p;
@@ -695,14 +695,14 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
     voice[pick].trig++;                         /* (last: the audio takes the numbers with it) */
     hit_ms[slot] = fm1_ms ? fm1_ms : 1u;
 #ifdef DINGHY_HOST
-    printf("%7u ms  %s %u: note %d, vel %u\n", (unsigned)fm1_ms, GRP_NAME[o->grp], (unsigned)slot, (int)note, (unsigned)vel);
+    printf("%7u ms  %s %u: note %d, vel %u, voice %u\n", (unsigned)fm1_ms, GRP_NAME[o->grp], (unsigned)slot, (int)note, (unsigned)vel, (unsigned)pick);
 #endif
 }
 static int quiet(void)                          /* nothing sounds, not even a tail */
 {
     uint32_t v;
     if (run) return 0;
-    for (v = 0; v < NV; v++) if (voice[v].stage) return 0;
+    for (v = 0; v < NV; v++) if (voice[v].stage || voice[v].trig != voice[v].tseen) return 0;
     return 1;
 }
 
