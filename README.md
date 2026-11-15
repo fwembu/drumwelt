@@ -2,15 +2,16 @@
 
 **Percussion found in nature, for the M-VAVE FM-1.** A sibling of [Groundkeeper](https://github.com/fwembu/groundkeeper).
 
-Each drum sound is an object: a rock (bass drums and toms), a stick (woodblocks and pipes) or a pile of leaves and
-seeds (shakers). REC finds one at random, SAVE keeps it in a kit of eight. The keys play the object in hand, tuned to
+Each drum sound is an object: a rock (bass drums and toms), a stick (woodblocks and pipes), a pile of leaves and
+seeds (shakers) or a plant (FM: bells, croaks, buzzes, springs). REC finds one at random, SAVE keeps it in a kit of eight. The keys play the object in hand, tuned to
 the spell's scale; every object has a Euclidean cycle of its own, and PLAY runs them all.
 
 | | |
 | --- | --- |
-| Keys F3..E5 | play the object in hand, in the scale |
-| F5, F#5, G5 | what REC finds: rocks, sticks, leaves (lit) |
-| REC | a tap finds a new object; held: the one before comes back |
+| Keys | play the object in hand, in the scale |
+| F#5 | the object in hand silent (its hits to 0); again: back |
+| White keys, on ARP | set the hits, 1..16, and show them |
+| REC | a tap finds a new object of the kind chosen on EDIT; held: the one before comes back |
 | SAVE | a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand |
 | ALGORITHM | round the kit's objects |
 | SELECT, PRESETS | the spell, its scales |
@@ -20,12 +21,14 @@ the spell's scale; every object has a Euclidean cycle of its own, and PLAY runs 
 | Page | KNOB 1 | KNOB 2 | KNOB 3 | KNOB 4 |
 | --- | --- | --- | --- | --- |
 | HOME | Size | Matter | Hollow | Strike |
+| HOME, a plant | Stalk | Sap | Bend | Quiver |
 | ENV | Attack | Hold | Decay | Level |
 | ARP | Steps | Hits | Rotate | Rate |
 | ARP (again) | Chance | Wander | | |
 | FX | Filter | Resonance | Space | Mix |
 | GLO | Tempo | Pulse | Chords | Tonic |
 | SEL | Season | Roots | Shape | |
+| EDIT | Find (rocks, sticks, leaves, plants) | | | |
 
 ## Install
 

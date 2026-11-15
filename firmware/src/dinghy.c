@@ -4,14 +4,16 @@
  * (shakers). REC finds one at random, SAVE keeps it in the KIT (8 places). The keys play the object in hand, tuned to
  * the spell's scale; each object also has a cycle of its own (a Euclidean rhythm), and PLAY runs them all.
  *
- *   keys       F3..E5 play the object in hand, in the scale; F5 ROCKS, F#5 STICKS, G5 LEAVES: what REC finds (lit)
- *   REC        a tap finds a new object of that kind; held: the one before it comes back
+ *   keys       play the object in hand, in the scale; F#5: the object silent (its hits to 0), again: back
+ *              on ARP the white keys set the hits (1..16) and show them; the other black keys wait for a job
+ *   REC        a tap finds a new object of the kind chosen on EDIT; held: the one before it comes back
  *   SAVE       a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand
  *   ALGORITHM  round the kit's objects (and the one in hand)
  *   SELECT     the spell; PRESETS its scales; OCT- OCT+ the octave; PLAY the cycles
  *   HOME       KNOB 1..4: SIZE, MATTER, HOLLOW, STRIKE (the object's sound)
  *   pages      ENV attack, hold, decay, level; ARP steps, hits, rotate, rate (again: chance, wander); FX filter, res,
- *              space, mix; GLO tempo, pulse, chords, tonic; SEL season, roots, shape
+ *              space, mix; GLO tempo, pulse, chords, tonic; SEL season, roots, shape; EDIT what REC finds: rocks,
+ *              sticks, leaves or plants (a plant's HOME knobs: STALK, SAP, BEND, QUIVER)
  *   MIDI in    notes from USB or the TRS jack play the object in hand, with their velocity
  *
  * Rules of the road (the chip has no FPU and no libgcc): integers only, no float, no 64-bit division.
@@ -45,13 +47,16 @@ typedef struct {
     int32_t gfall;                              /* ... and how fast a grain dies, Q15 a frame */
     int32_t peak;                               /* the envelope's top, Q15 */
     uint32_t att, hold, mdk;                    /* attack and hold in chunks; the decay, Q16 a chunk */
+    uint32_t fm;                                /* plants: partial 2 is no overtone but bends the phase of 1 and 3 (FM); its level is the depth */
+    uint32_t rise;                              /* the pitch at the blow lies under the note (drop: how far), not over */
+    uint32_t trinc, trdep;                      /* a quiver in the level: its step a chunk; its depth, Q16 */
 } vpar_t;
 static struct {
     vpar_t nx;                                  /* the next hit (main loop writes, then trig) */
     volatile uint32_t trig;                     /* +1 = strike now */
     uint32_t tseen;
     vpar_t p;                                   /* the hit sounding (audio's copy) */
-    uint32_t ph[3], rng, left, gpn;
+    uint32_t ph[3], rng, left, gpn, tph;
     int32_t e[3], pe, ne, a, astep;             /* levels x256: the partials', the pitch fall, the noise's, the envelope */
     int32_t g[4];                               /* the gains at the end of the last chunk, Q15 */
     int32_t lp, bp, gr;                         /* the band-pass; the grain's level */
@@ -88,13 +93,14 @@ static int voices_audio(int32_t *bus, uint32_t n)   /* adds the voices, mono, to
             voice[v].gr = p->gp ? 30000 : 32767;    /* (the first grain is the blow itself: on time) */
             voice[v].left = p->hold;
             voice[v].astep = p->att ? (p->peak << 8) / (int32_t)p->att : 0;
+            voice[v].tph = 0;
             voice[v].stage = 1;
             if (!voice[v].rng) voice[v].rng = 0x9E3779B9u + v * 7919u;
         }
         if (!voice[v].stage && !(voice[v].g[0] | voice[v].g[1] | voice[v].g[2] | voice[v].g[3])) continue;   /* silent: costs nothing */
         any = 1;
         for (c0 = 0; c0 < n; c0 += CH) {
-            uint32_t m = n - c0 < CH ? n - c0 : CH, inc[3], ph[3], act[4], rng = voice[v].rng, grains = p->gp != 0u, gp16;
+            uint32_t m = n - c0 < CH ? n - c0 : CH, inc[3], ph[3], act[4], rng = voice[v].rng, grains = p->gp != 0u, gp16, fm = p->fm;
             int32_t tg[4], g[4], d[4], am, a = voice[v].a, lp = voice[v].lp, bp = voice[v].bp, gr = voice[v].gr;
             int32_t nf = p->nf, nq = p->nq, nhp = p->nhp, gfall = p->gfall;
             if (voice[v].stage == 1u) {         /* the envelope: up, wait, down */
@@ -108,16 +114,22 @@ static int voices_audio(int32_t *bus, uint32_t n)   /* adds the voices, mono, to
             } else a = 0;
             voice[v].a = a;
             am = a >> 8;
+            if (p->trdep) {                     /* the quiver: the level dips and comes back */
+                int32_t w = 32767 - sine(voice[v].tph += p->trinc);   /* 0 .. 65534 */
+                am -= (int32_t)(((int64_t)am * ((w * (int32_t)(p->trdep >> 1)) >> 15)) >> 16);
+            }
             for (j = 0; j < 3u; j++) {          /* the partials: each its own decay under the envelope */
                 if (p->dk[j] < 65536u) voice[v].e[j] = (int32_t)keep((uint32_t)voice[v].e[j], p->dk[j]);
                 tg[j] = (am * (voice[v].e[j] >> 8)) >> 15;
             }
+            if (fm) tg[1] = a ? voice[v].e[1] >> 8 : 0;   /* (a depth, not a level: it does not follow the envelope) */
             if (p->ndk < 65536u) voice[v].ne = (int32_t)keep((uint32_t)voice[v].ne, p->ndk);
             tg[3] = (am * ((((voice[v].ne >> 8) * p->nlv) >> 15))) >> 15;
             voice[v].pe = (int32_t)keep((uint32_t)voice[v].pe, p->drop_k);
             voice[v].gpn = keep(voice[v].gpn, p->gpk);
             gp16 = voice[v].gpn >> 12;
-            inc[0] = p->inc + (uint32_t)(((uint64_t)p->inc * (uint32_t)(voice[v].pe >> 8)) >> 12);
+            inc[0] = (uint32_t)(((uint64_t)p->inc * (uint32_t)(voice[v].pe >> 8)) >> 12);
+            inc[0] = p->rise ? p->inc - inc[0] : p->inc + inc[0];
             inc[1] = (uint32_t)(((uint64_t)inc[0] * p->r2) >> 12);
             inc[2] = (uint32_t)(((uint64_t)inc[0] * p->r3) >> 12);
             for (j = 0; j < 3u; j++) {
@@ -134,9 +146,17 @@ static int voices_audio(int32_t *bus, uint32_t n)   /* adds the voices, mono, to
             for (j = 0; j < 3u; j++) ph[j] = voice[v].ph[j];
             for (i = 0; i < m; i++) {
                 int32_t s = 0;
-                if (act[0]) { ph[0] += inc[0]; g[0] += d[0]; s += (sine(ph[0]) * g[0]) >> 15; }
-                if (act[1]) { ph[1] += inc[1]; g[1] += d[1]; s += (sine(ph[1]) * g[1]) >> 15; }
-                if (act[2]) { ph[2] += inc[2]; g[2] += d[2]; s += (sine(ph[2]) * g[2]) >> 15; }
+                if (fm) {                       /* a plant: 2 bends the phase of 1 and 3 (at its top level, a full turn) */
+                    uint32_t mod;
+                    ph[1] += inc[1]; g[1] += d[1];
+                    mod = (uint32_t)(sine(ph[1]) * g[1]) << 2;
+                    if (act[0]) { ph[0] += inc[0]; g[0] += d[0]; s += (sine(ph[0] + mod) * g[0]) >> 15; }
+                    if (act[2]) { ph[2] += inc[2]; g[2] += d[2]; s += (sine(ph[2] + mod) * g[2]) >> 15; }
+                } else {
+                    if (act[0]) { ph[0] += inc[0]; g[0] += d[0]; s += (sine(ph[0]) * g[0]) >> 15; }
+                    if (act[1]) { ph[1] += inc[1]; g[1] += d[1]; s += (sine(ph[1]) * g[1]) >> 15; }
+                    if (act[2]) { ph[2] += inc[2]; g[2] += d[2]; s += (sine(ph[2]) * g[2]) >> 15; }
+                }
                 if (act[3]) {
                     uint32_t r = xs32(&rng);
                     int32_t x = (int16_t)(r >> 16), hp, y;
@@ -492,7 +512,7 @@ static int lfo_tick(uint32_t bpm, uint32_t pul, uint32_t shp, uint32_t sea, uint
  * no knob reaches (the overtones' ratios, the noise's colour, the picture's shape). The kit has NKIT places; the place
  * after them is the hand: the object just found, not yet kept. */
 #define NKIT 8u
-enum { G_ROCK, G_STICK, G_LEAF, NGRP };
+enum { G_ROCK, G_STICK, G_LEAF, G_PLANT, NGRP };
 typedef struct { uint8_t on, grp, siz, mat, hol, stk, att, hld, dec, lvl, stp, hit, rot, rat, chc, wan, seed[4]; } obj_t;
 #define NCHG 11u
 static const uint8_t CHG_N[NCHG] = {0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16};   /* CHORDS: pulses a chord; 0: HOLD */
@@ -520,8 +540,9 @@ static const char *const F_NAME[F_N + 2] = {"OCT", "CH", "TEMPO", "SPELL", "TONI
     "CHORDS", "FILTER", "RES", "SPACE", "MIX", "FIND", "OBJECT",
     "SIZE", "MATTER", "HOLLOW", "STRIKE", "ATTACK", "HOLD", "DECAY", "LEVEL", "STEPS", "HITS", "ROTATE", "RATE", "CHANCE",
     "WANDER", "CPU", ""};
-static const char *const GRP_NAME[NGRP] = {"ROCK", "STICK", "LEAVES"};
-static const char *const GRP_FIND[NGRP] = {"ROCKS", "STICKS", "LEAVES"};
+static const char *const GRP_NAME[NGRP] = {"ROCK", "STICK", "LEAVES", "PLANT"};
+static const char *const GRP_FIND[NGRP] = {"ROCKS", "STICKS", "LEAVES", "PLANTS"};
+static const char *const PLANT_NAME[4] = {"STALK", "SAP", "BEND", "QUIVER"};   /* a plant's four HOME knobs: its own */
 #define HAND (&set.kit[NKIT])
 #define CUR (&set.kit[set.cur])
 static uint8_t *fp(uint32_t f)                  /* where a setting lives: the settings, or the object in hand */
@@ -537,14 +558,19 @@ static uint32_t cfg_max(uint32_t f)             /* the top of a setting, some of
 }
 /* the pages: HOME (the object's sound); ENV; ARP 1 (the cycle), 2 (chance, wander); FX; GLO (the tempo and the
  * harmony's pace); SEL (season, roots, shape) */
-enum { P_HOME, P_ENV, P_ARP1, P_ARP2, P_FX, P_GLO, P_SEL, NPAGE };
-static const char *const PAGE_NAME[NPAGE] = {"", "ENV", "ARP", "ARP 2", "FX", "GLO", "SEL"};
+enum { P_HOME, P_ENV, P_ARP1, P_ARP2, P_FX, P_GLO, P_SEL, P_EDIT, NPAGE };
+static const char *const PAGE_NAME[NPAGE] = {"", "ENV", "ARP", "ARP 2", "FX", "GLO", "SEL", "EDIT"};
 static uint32_t page_field(uint32_t page, uint32_t k)
 {
     static const uint8_t PF[NPAGE][4] = {{F_SIZ, F_MAT, F_HOL, F_STK}, {F_ATT, F_HLD, F_DEC, F_LVL}, {F_STP, F_HIT, F_ROT, F_RAT},
-        {F_CHC, F_WAN, F_NONE, F_NONE}, {F_CUT, F_RES, F_SPC, F_MIX}, {F_BPM, F_PUL, F_CHG, F_TNC}, {F_SEA, F_ROO, F_SHP, F_NONE}};
+        {F_CHC, F_WAN, F_NONE, F_NONE}, {F_CUT, F_RES, F_SPC, F_MIX}, {F_BPM, F_PUL, F_CHG, F_TNC}, {F_SEA, F_ROO, F_SHP, F_NONE},
+        {F_GRP, F_NONE, F_NONE, F_NONE}};
     uint32_t f = PF[page][k];
     return f >= F_G && f < F_N && !CUR->on ? F_NONE : f;   /* (nothing in hand: nothing to turn) */
+}
+static const char *fname(uint32_t f)            /* a setting's name: a plant's four HOME knobs have their own */
+{
+    return f >= F_SIZ && f <= F_STK && CUR->grp == G_PLANT ? PLANT_NAME[f - F_SIZ] : F_NAME[f];
 }
 static void apply(void)                         /* the settings to the sound */
 {
@@ -564,7 +590,13 @@ static void find(obj_t *o, uint32_t grp)
     o->on = 1; o->grp = (uint8_t)grp;
     o->siz = (uint8_t)(4u + rnd(13u)); o->mat = (uint8_t)(2u + rnd(17u)); o->hol = (uint8_t)rnd(21u); o->stk = (uint8_t)(3u + rnd(16u));
     o->att = 0; o->hld = 0; o->lvl = 16; o->rat = 3;   /* (the cycle in sixteenths) */
-    if (grp == G_ROCK) {
+    if (grp == G_PLANT) {                       /* a plant: the whole range of every knob, so no two alike */
+        o->siz = (uint8_t)rnd(21u); o->mat = (uint8_t)rnd(21u); o->hol = (uint8_t)rnd(21u); o->stk = rnd(5u) < 2u ? 0u : (uint8_t)rnd(21u);
+        o->att = rnd(4u) ? 0u : (uint8_t)rnd(8u); o->hld = rnd(3u) ? 0u : (uint8_t)rnd(6u);
+        o->dec = (uint8_t)(4u + rnd(28u));
+        o->stp = (uint8_t)(4u + rnd(13u)); o->hit = (uint8_t)(1u + rnd(o->stp / 2u)); o->rot = (uint8_t)rnd(o->stp);
+        o->chc = (uint8_t)(12u + rnd(9u)); o->wan = (uint8_t)rnd(21u);
+    } else if (grp == G_ROCK) {
         o->dec = (uint8_t)(12u + rnd(14u));     /* ~100 .. 500 ms */
         o->stp = 16; o->hit = (uint8_t)(1u + rnd(4u)); o->rot = rnd(3u) ? 0u : (uint8_t)rnd(16u);
         o->chc = 20; o->wan = 0;
@@ -611,8 +643,8 @@ static uint32_t band_f(int32_t note)            /* a band-pass's centre from a n
     uint32_t f = (uint32_t)(((uint64_t)note_inc((uint32_t)(note < 12 ? 12 : note > 124 ? 124 : note)) * 205887u) >> 32);
     return f < 200u ? 200u : f > 30000u ? 30000u : f;
 }
-static const int8_t GOFF[NGRP] = {-24, 12, 0};  /* where each kind sits: rocks two octaves under the keys, sticks one over */
-static const uint16_t VGAIN[NGRP] = {28000, 22000, 26000};   /* a hit's top level, Q15 */
+static const int8_t GOFF[NGRP] = {-24, 12, 0, 0};  /* where each kind sits: rocks two octaves under the keys, sticks one over */
+static const uint16_t VGAIN[NGRP] = {28000, 22000, 26000, 26000};   /* a hit's top level, Q15 */
 static uint32_t ages, hit_ms[NKIT + 1u];        /* when each place last sounded (the screen) */
 static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
 {
@@ -621,12 +653,12 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     vpar_t p = {0};
     if (!o->on || !vel) return;
-    note = (int32_t)degrees(keynote, (10 - S) * 7 / 10) + GOFF[o->grp];
+    note = (int32_t)degrees(keynote, o->grp == G_PLANT ? 0 : (10 - S) * 7 / 10) + GOFF[o->grp];
     note = note < 12 ? 12 : note > 119 ? 119 : note;
     p.inc = note_inc((uint32_t)note);
     p.peak = (int32_t)((uint32_t)VGAIN[o->grp] * o->lvl / 20u * (60u + vel) / 187u);
     att_ms = ATT_MS[o->att];
-    ix = (int32_t)(DEC0 + o->dec) + (S - 10) / 4;
+    ix = (int32_t)(DEC0 + o->dec) + (o->grp == G_PLANT ? 0 : (S - 10) / 4);
     p.mdk = DK[ix < 0 ? 0 : ix > (int32_t)NDK - 1 ? (int32_t)NDK - 1 : ix];
     p.gpk = 65536u;
     switch (o->grp) {
@@ -665,6 +697,34 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
         p.nlv = 2500 + K * 1000 + H * 300;
         p.ndk = dk_ms((uint32_t)(8 + (20 - K) + H * 6));
         att_ms += (20 - K) / 7;
+        break;
+    }
+    case G_PLANT: {                             /* FM: a stem that rings, croaks, buzzes or springs (the knobs: STALK, SAP, BEND, QUIVER) */
+        static const uint16_t STALK[21] = {     /* the modulator's ratio, Q12: whole numbers (reedy, hollow), halves, then nothing harmonic (bells, thorns) */
+            4096, 8192, 12288, 16384, 20480, 28672, 2048, 6144, 10240, 14336,
+            5776, 7086, 9175, 11305, 12861, 14787, 17162, 22241, 27812, 33628, 45466};
+        static const uint16_t SECOND[4] = {4110, 8192, 2048, 6144};   /* the second carrier: a hair off, an octave up or down, a fifth */
+        int32_t amt = H < 10 ? 10 - H : H - 10;
+        uint32_t f = 768u, i;                   /* the quiver: 3 Hz, a quarter faster a step, to ~200 Hz (a buzz) */
+        p.fm = 1;
+        p.r2 = STALK[S];
+        p.r3 = SECOND[dna(o, 6) & 3u];
+        p.lv[0] = 22000;
+        p.lv[1] = M * 1600;                     /* SAP: how far the phase bends (dry: a pure tone; full of sap: bright, harsh) */
+        p.lv[2] = (int32_t)dna(o, 4) * 40;
+        p.dk[0] = 65536u;
+        p.dk[1] = M >= 18 ? 65536u : dk_ms((uint32_t)(40 + (int32_t)dna(o, 3) * 2 + M * M * 3));   /* ... and how long it stays bent */
+        p.dk[2] = dk_ms(100u + dna(o, 2) * 4u);
+        p.drop = amt * amt * 30;                /* BEND: under 10 the note falls into place, over 10 it springs up to it */
+        p.rise = H > 10;
+        p.drop_k = dk_ms((uint32_t)(30 + (int32_t)dna(o, 0) + amt * 12));
+        for (i = 1; i < (uint32_t)K; i++) f = f * 5u / 4u;
+        p.trinc = f * 6087u;
+        p.trdep = K ? (uint32_t)(22000 + K * 2100) : 0u;
+        p.nf = (int32_t)band_f(note + 24 + (int32_t)(dna(o, 5) >> 4));
+        p.nq = 24000;
+        p.nlv = 1500 + (int32_t)dna(o, 1) * 12;   /* (a small pluck) */
+        p.ndk = dk_ms(8u + (dna(o, 7) >> 4));
         break;
     }
     default:
@@ -748,8 +808,9 @@ static void cycle_tick(void)
 #define C_ACC RGB(200, 156, 88)                 /* bark */
 #define C_OFF RGB(90, 90, 90)
 #define KEY0 53u                                /* key 0 = F3 */
-#define KEY_PLAY 24u                            /* keys 0..23 play (F3..E5); the top three choose what REC finds */
-static const uint8_t GRP_RGB[NGRP][3] = {{176, 176, 164}, {200, 156, 88}, {120, 170, 90}};   /* stone, bark, leaf */
+#define KEY_MUTE 25u                            /* F#5: the object in hand falls silent (its hits to 0); again: back */
+static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* the white keys, left to right */
+static const uint8_t GRP_RGB[NGRP][3] = {{176, 176, 164}, {200, 156, 88}, {120, 170, 90}, {214, 140, 170}};   /* stone, bark, leaf, blossom */
 static uint16_t tone(uint32_t grp, int32_t l)   /* a kind's colour at light l: 0 dark .. 160 itself .. 255 pale */
 {
     int32_t r = GRP_RGB[grp][0], g = GRP_RGB[grp][1], b = GRP_RGB[grp][2];
@@ -856,12 +917,77 @@ static void draw_leaves(const obj_t *o, int32_t l)
     if (H > 5) cv_ell(120, 98 - high / 2, wide + 10, high / 2 + 14, H > 13 ? leaf : dim, H < 14);   /* a pod round them */
     else cv_line(120 - wide - 8, 99, 120 + wide + 8, 99, dim);   /* (the ground) */
 }
+static void draw_plant(const obj_t *o, int32_t l)   /* STALK: how thick, and thorns; SAP: its leaves; BEND: which way it leans; QUIVER: its tremble */
+{
+    int32_t S = o->siz, M = o->mat, H = o->hol, K = o->stk, t, x0 = 120, y0 = 110, x = 120, y = 110, w = 1 + S / 6, j, r = 3 + (int32_t)(dna(o, 9) % 5u);
+    uint16_t c = tone(G_PLANT, l), leaf = tone(G_LEAF, l), dim = tone(G_PLANT, l * 3 / 8);
+    cv_line(70, 111, 170, 111, tone(G_LEAF, l * 3 / 8));   /* (the ground) */
+    for (t = 1; t <= 24; t++) {
+        x = 120 + (H - 10) * t * t / 96 + sy((uint32_t)t * 0x15555555u, K * (t > 4 ? 1 : 0) / 3);
+        y = 110 - t * (74 + (int32_t)(dna(o, 8) % 16u)) / 24;
+        for (j = 0; j < w; j++) cv_line(x0 + j - w / 2, y0, x + j - w / 2, y, c);
+        if (M > 1 && t % (M > 12 ? 2 : M > 6 ? 3 : 5) == 0 && t < 23) {   /* a leaf, left and right in turn */
+            int32_t dir = (t / (M > 12 ? 2 : M > 6 ? 3 : 5)) & 1 ? 1 : -1, len = 5 + M / 2;
+            cv_line(x, y, x + dir * len, y - len / 3, leaf); cv_line(x + dir * len, y - len / 3, x + dir * len / 2, y - len * 2 / 3, leaf);
+            cv_line(x + dir * len / 2, y - len * 2 / 3, x, y, leaf);
+        }
+        if (S > 13 && (t & 3) == 2) cv_line(x + w / 2, y, x + w / 2 + 3, y - 2, dim);   /* thorns */
+        x0 = x; y0 = y;
+    }
+    cv_ell(x, y - r, r, r, c, 0);               /* its head */
+    if (dna(o, 6) & 1u) cv_ell(x, y - r, r + 3, r + 3, dim, 1);
+    for (j = 0; j < K / 3; j++) {               /* a quiver: it trembles */
+        cv_line(x + r + 6 + j * 4, y - r - 4, x + r + 8 + j * 4, y - r + 4, dim);
+        cv_line(x - r - 6 - j * 4, y - r - 4, x - r - 8 - j * 4, y - r + 4, dim);
+    }
+}
+static void draw_env(const obj_t *o)            /* ENV: the envelope as a line: up (ATTACK), along (HOLD), away (DECAY); LEVEL its height */
+{
+    static const uint8_t FALL[9] = {255, 166, 108, 70, 45, 29, 19, 12, 0};   /* a decay's shape, eighths of its length */
+    int32_t wa = 3 + (int32_t)ATT_MS[o->att] * 2 / 5, wh = (int32_t)HLD_MS[o->hld] / 6, wd = 14 + (int32_t)o->dec * 3;
+    int32_t h = 12 + (int32_t)o->lvl * 4, base = 104, x = (240 - (wa + wh + wd)) / 2, i, px, py;
+    uint16_t c, dim;
+    cv_begin(240, OB_H, C_BLACK);
+    if (o->on) {
+        c = tone(o->grp, 170); dim = tone(o->grp, 60);
+        cv_line(8, base, 232, base, RGB(45, 45, 45));
+        cv_line(x, base, x + wa, base - h, c);
+        cv_line(x + wa, base - h, x + wa + wh, base - h, c);
+        px = x + wa + wh; py = base - h;
+        for (i = 1; i <= 8; i++) {
+            int32_t nx = x + wa + wh + wd * i / 8, ny = base - h * FALL[i] / 255;
+            cv_line(px, py, nx, ny, c);
+            if (i < 8) cv_line(nx, ny + 2, nx, base, dim);   /* (shaded under the fall) */
+            px = nx; py = ny;
+        }
+        cv_rect(x - 1, base - 1, 3, 3, c); cv_rect(x + wa - 1, base - h - 1, 3, 3, c);   /* the corners */
+        cv_rect(x + wa + wh - 1, base - h - 1, 3, 3, c); cv_rect(x + wa + wh + wd - 1, base - 1, 3, 3, c);
+    }
+    cv_blit(0, OB_Y);
+}
+static void draw_find(void)                     /* EDIT: the four kinds; the one REC finds bright */
+{
+    uint32_t g;
+    cv_begin(240, OB_H, C_BLACK);
+    for (g = 0; g < NGRP; g++) {
+        int32_t x = (int32_t)g * 60, l = g == set.grp ? 200 : 55;
+        uint16_t c = tone(g, l);
+        if (g == G_ROCK) { cv_rect(x + 20, 38, 20, 24, c); cv_rect(x + 16, 44, 28, 12, c); }
+        else if (g == G_STICK) { int32_t j; for (j = 0; j < 4; j++) cv_line(x + 14, 60 + j, x + 46, 40 + j, c); }
+        else if (g == G_LEAF) { cv_rect(x + 18, 50, 8, 8, c); cv_rect(x + 30, 40, 8, 8, c); cv_rect(x + 36, 54, 8, 8, c); }
+        else { cv_rect(x + 29, 44, 2, 20, c); cv_ell(x + 30, 38, 5, 5, c, 0); cv_line(x + 30, 54, x + 38, 48, c); cv_line(x + 30, 58, x + 22, 52, c); }
+        cv_text(x + (60 - text_w(&FONT_S, GRP_FIND[g])) / 2, 78, &FONT_S, GRP_FIND[g], g == set.grp ? c : C_OFF);
+        if (g == set.grp) cv_rect(x + 14, 98, 32, 2, c);
+    }
+    cv_blit(0, OB_Y);
+}
 static void draw_object(const obj_t *o, int flare)
 {
     cv_begin(240, OB_H, C_BLACK);
     if (!o->on) cv_text((240 - text_w(&FONT_S, "REC finds one")) / 2, 52, &FONT_S, "REC finds one", C_OFF);
     else if (o->grp == G_ROCK) draw_rock(o, flare ? 250 : 160);
     else if (o->grp == G_STICK) draw_stick(o, flare ? 250 : 160);
+    else if (o->grp == G_PLANT) draw_plant(o, flare ? 250 : 160);
     else draw_leaves(o, flare ? 250 : 160);
     cv_blit(0, OB_Y);
 }
@@ -872,10 +998,11 @@ static void draw_kit(uint32_t now)
     cv_begin(240, 28, C_BLACK);
     for (i = 0; i < NKIT; i++) {
         const obj_t *o = &set.kit[i];
-        int32_t x = (int32_t)i * 30, l = hit_ms[i] && now - hit_ms[i] < 110u ? 255 : 150;
+        int32_t x = (int32_t)i * 30, l = hit_ms[i] && now - hit_ms[i] < 110u ? 255 : o->hit ? 150 : 60;   /* (no hits: dim) */
         if (!o->on) { cv_rect(x + 14, 11, 2, 2, RGB(60, 60, 60)); continue; }
         if (o->grp == G_ROCK) { cv_rect(x + 10, 6, 10, 12, tone(G_ROCK, l)); cv_rect(x + 8, 9, 14, 6, tone(G_ROCK, l)); }
         else if (o->grp == G_STICK) { cv_line(x + 7, 17, x + 23, 7, tone(G_STICK, l)); cv_line(x + 7, 18, x + 23, 8, tone(G_STICK, l)); cv_line(x + 8, 19, x + 24, 9, tone(G_STICK, l)); }
+        else if (o->grp == G_PLANT) { cv_rect(x + 14, 9, 2, 11, tone(G_PLANT, l)); cv_rect(x + 12, 4, 6, 5, tone(G_PLANT, l)); cv_rect(x + 16, 13, 4, 2, tone(G_PLANT, l)); cv_rect(x + 10, 15, 4, 2, tone(G_PLANT, l)); }
         else { cv_rect(x + 9, 13, 4, 4, tone(G_LEAF, l)); cv_rect(x + 15, 8, 4, 4, tone(G_LEAF, l)); cv_rect(x + 18, 15, 4, 4, tone(G_LEAF, l)); }
         if (i == set.cur) cv_rect(x + 5, 24, 20, 2, C_ACC);
     }
@@ -958,6 +1085,12 @@ static void fmt_field(char **q, uint32_t f)     /* a setting's value as the pane
     case F_SPC: put(q, SPACE_LABEL[v]); break;
     case F_MIX: case F_CHC: case F_LVL: case F_WAN: put_num(q, v * 5u); *(*q)++ = '%'; break;
     case F_TNC: put(q, TONIC_NAME[v]); break;
+    case F_GRP: put(q, GRP_FIND[v]); break;
+    case F_HOL:
+        if (CUR->grp != G_PLANT) { put_num(q, v); break; }
+        if (v != 10u) *(*q)++ = v < 10u ? '-' : '+';   /* a plant's BEND: down or up from the middle */
+        put_num(q, v < 10u ? 10u - v : v - 10u);
+        break;
     case F_HIT: put_num(q, v < CUR->stp ? v : CUR->stp); break;
     case F_RAT: put(q, RATE_LABEL[v]); break;
     case F_ATT: put_ms(q, ATT_MS[v]); break;
@@ -977,7 +1110,7 @@ static void draw_knobs(uint32_t page)           /* the page's four knobs: a name
         if (f == F_NONE) continue;              /* (an empty knob) */
         fmt_field(&q, f);
         *q = 0;
-        cv_text((int32_t)x0 + (60 - text_w(&FONT_S, F_NAME[f])) / 2, 0, &FONT_S, F_NAME[f], C_OFF);
+        cv_text((int32_t)x0 + (60 - text_w(&FONT_S, fname(f))) / 2, 0, &FONT_S, fname(f), C_OFF);
         cv_text((int32_t)x0 + (60 - text_w(&FONT_S, v)) / 2, 18, &FONT_S, v, C_ACC);
         if (cfg_max(f) > CFG_MIN[f]) {
             uint32_t val = *fp(f) > cfg_max(f) ? cfg_max(f) : *fp(f);
@@ -1002,7 +1135,7 @@ static void say(const char *s) { say_at(1u, s); }   /* (on the right) */
 static void say_field(uint32_t f)
 {
     char s[34], *q = s;
-    put(&q, F_NAME[f]); *q++ = ' '; fmt_field(&q, f);
+    put(&q, fname(f)); *q++ = ' '; fmt_field(&q, f);
     *q = 0;
     say(s);
 }
@@ -1075,8 +1208,8 @@ static void app_main(void)
     uint32_t cpu_t = 0;
 #endif
     uint8_t held[27] = {0};                     /* the note each key plays */
+    static uint8_t was_hit[NKIT + 1u];          /* F#5: the hits each place had before it fell silent */
 #if BOARD_SMK37
-    static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* white key -> key */
     smk_pad_events = 1;                         /* the pads as events (smk_pad_take): they play here */
 #endif
     {                                           /* the settings: loaded, every one in its range, else all the defaults */
@@ -1111,16 +1244,24 @@ static void app_main(void)
         down = keys & ~prev;
         up = prev & ~keys;
         prev = keys;
-        for (k = 0; k < NGRP; k++)              /* F5, F#5, G5: what REC finds */
-            if (down >> (KEY_PLAY + k) & 1u) { set.grp = (uint8_t)k; say(GRP_FIND[k]); dirty = 1; t_change = fm1_ms; }
-        for (k = 0; k < KEY_PLAY; k++) {        /* the keys: the object in hand, in the scale */
+        for (k = 0; k < 27u; k++) {             /* the keys: the object in hand, in the scale */
 #if BOARD_SMK37
             uint32_t vel = fm1_in.key_vel[SMK_KEY_F3 + k];   /* the SMK's keys feel the velocity */
 #else
             uint32_t vel = 100;
 #endif
-            if (down >> k & 1u) { held[k] = (uint8_t)degrees(base + k, 0); strike(set.cur, held[k], vel); midi_send(0x90u | out_ch, held[k], vel); }
-            if (up >> k & 1u) midi_send(0x80u | out_ch, held[k], 0);
+            if (up >> k & 1u && held[k]) { midi_send(0x80u | out_ch, held[k], 0); held[k] = 0; }
+            if (!(down >> k & 1u)) continue;
+            if (k == KEY_MUTE) {                /* F#5, on every page: the object's hits to 0; again: what they were */
+                if (!CUR->on) continue;
+                if (CUR->hit) { was_hit[set.cur] = CUR->hit; CUR->hit = 0; say("SILENT"); }
+                else { CUR->hit = was_hit[set.cur] && was_hit[set.cur] <= CUR->stp ? was_hit[set.cur] : 1u; say_field(F_HIT); }
+                dirty = 1; t_change = fm1_ms;
+            } else if (page == P_ARP1 || page == P_ARP2) {   /* ARP: the white keys set the hits, 1 .. 16 (the knob goes on) */
+                uint32_t w;
+                for (w = 0; w < 16u && WHITE[w] != k; w++) ;
+                if (w < 16u && CUR->on) { CUR->hit = (uint8_t)(w + 1u > CUR->stp ? CUR->stp : w + 1u); dirty = 1; t_change = fm1_ms; }
+            } else { held[k] = (uint8_t)degrees(base + k, 0); strike(set.cur, held[k], vel); midi_send(0x90u | out_ch, held[k], vel); }
         }
 #if BOARD_SMK37
         while ((e = smk_extkey_take()) >= 0) {  /* the keys left and right of the FM-1's 27: key << 8 | velocity */
@@ -1142,6 +1283,7 @@ static void app_main(void)
         if (b & (1u << BTN_FX)) page = page == P_FX ? P_HOME : P_FX;
         if (b & (1u << BTN_GLO)) page = page == P_GLO ? P_HOME : P_GLO;
         if (b & (1u << BTN_SEL)) page = page == P_SEL ? P_HOME : P_SEL;
+        if (b & (1u << BTN_EDIT)) page = page == P_EDIT ? P_HOME : P_EDIT;   /* EDIT: what REC finds */
         if (b & (1u << BTN_REC)) { rec_t = fm1_ms; rec_done = 0; }   /* REC: a tap finds an object; held: the one before */
         if (fm1_in.buttons >> BTN_REC & 1u && !rec_done && fm1_ms - rec_t > 600u) {
             rec_done = 1;
@@ -1217,8 +1359,10 @@ static void app_main(void)
         midi_in();
 
         now = fm1_ms;
-        for (k = 0; k < KEY_PLAY; k++) lit |= (keys >> k & 1u) << k;   /* a key lit while held; the kind REC finds */
-        lit |= 1u << (KEY_PLAY + set.grp);
+        if (page == P_ARP1 || page == P_ARP2) { /* ARP: the white keys show the hits; elsewhere a key is lit while held */
+            for (k = 0; k < 16u; k++) if (CUR->on && k < CUR->hit) lit |= 1u << WHITE[k];
+        } else lit = keys & ~(1u << KEY_MUTE);
+        if (CUR->on && !CUR->hit) lit |= 1u << KEY_MUTE;   /* F#5 lit: silent */
         for (k = 0; k < 27u; k++) fm1_led_key(KEY_LED(k), lit >> k & 1u);
         fm1_led_key(BTN_HOME, page == P_HOME);  /* the page's button lit */
         fm1_led_key(BTN_ENV, page == P_ENV);
@@ -1226,6 +1370,7 @@ static void app_main(void)
         fm1_led_key(BTN_FX, page == P_FX);
         fm1_led_key(BTN_GLO, page == P_GLO);
         fm1_led_key(BTN_SEL, page == P_SEL);
+        fm1_led_key(BTN_EDIT, page == P_EDIT);
         fm1_led_key(BTN_REC, fm1_in.buttons >> BTN_REC & 1u);
         fm1_led_key(BTN_SAVE, set.cur == NKIT && HAND->on);   /* lit: the object in hand is not kept yet */
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
@@ -1263,6 +1408,12 @@ static void app_main(void)
                 st = hsh(obj_seed(CUR) ^ (uint32_t)CUR->stp << 8 ^ (uint32_t)CUR->hit << 14 ^ (uint32_t)CUR->rot << 20 ^ (uint32_t)CUR->chc << 26)
                      + (run ? 1000u + cyc_step(CUR) : 0u) + (uint32_t)(run && hit_ms[set.cur] && now - hit_ms[set.cur] < 200u) * 77u + page * 5u + CUR->on;
                 if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_arp(now); }
+            } else if (page == P_ENV) {
+                st = 0x60000000u + CUR->att + CUR->hld * 16u + CUR->dec * 256u + CUR->lvl * 16384u + CUR->grp * 0x80000u + CUR->on * 0x400000u + set.cur * 0x800000u;
+                if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_env(CUR); }
+            } else if (page == P_EDIT) {
+                st = 0x70000000u + set.grp;
+                if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_find(); }
             } else if (page == P_GLO || page == P_SEL) {
                 st = 0x50000000u + spell_now + scale_now * 8u + tonic * 128u + (run ? 2048u + chord_now * 4096u : 0u) + cpu_pct * 65536u + kl * 0x1000000u;
                 if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_spell(cpu_pct, (int)kl); }
@@ -1275,7 +1426,7 @@ static void app_main(void)
             uint32_t lv = 0;
             const char *ls = "";
             st = set.cur;                       /* the kit: redrawn when it changes or a place sounds */
-            for (k = 0; k < NKIT; k++) st = st * 7u + set.kit[k].on * (1u + set.kit[k].grp) + (uint32_t)(hit_ms[k] && now - hit_ms[k] < 110u) * 4u;
+            for (k = 0; k < NKIT; k++) st = st * 11u + set.kit[k].on * (1u + set.kit[k].grp + (set.kit[k].hit ? 0u : 5u)) + (uint32_t)(hit_ms[k] && now - hit_ms[k] < 110u) * 4u;
             if (st != kit_drawn) { kit_drawn = st; draw_kit(now); }
             if (say_v[0] && now - say_t[0] < 1800u) { ls = say_s[0]; lv = say_v[0]; }   /* left: the harmony, a moment */
             if (lv != label_drawn) { label_drawn = lv; draw_text_box(6, 216, 114, &FONT_S, ls, C_ACC, 0); }
