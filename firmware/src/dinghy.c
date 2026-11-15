@@ -6,14 +6,14 @@
  *
  *   keys       play the object in hand, in the scale; F#5: the object silent (its hits to 0), again: back
  *              on ARP the white keys set the hits (1..16) and show them; the other black keys wait for a job
- *   REC        a tap finds a new object of the kind chosen on EDIT; held: the one before it comes back
+ *   REC        a tap finds a new object of the kind PRESETS chose (HOME, top left); held: the one before it comes back
  *   SAVE       a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand
  *   ALGORITHM  round the kit's objects (and the one in hand)
- *   SELECT     the spell; PRESETS its scales; OCT- OCT+ the octave; PLAY the cycles
+ *   SELECT     the spell; PRESETS what REC finds: rocks, sticks, leaves, plants; OCT- OCT+ the octave; PLAY the cycles
  *   HOME       KNOB 1..4: SIZE, MATTER, HOLLOW, STRIKE (the object's sound)
  *   pages      ENV attack, hold, decay, level; ARP steps, hits, rotate, rate (again: chance, wander); FX filter, res,
- *              space, mix; GLO tempo, pulse, chords, tonic; SEL season, roots, shape; EDIT what REC finds: rocks,
- *              sticks, leaves or plants (a plant's HOME knobs: STALK, SAP, BEND, QUIVER)
+ *              space, mix; GLO tempo, pulse, chords, tonic; SEL season, roots, shape, scale; LFO the object's own:
+ *              moves (which setting), every (beats), depth, wave. A plant's HOME knobs: STALK, SAP, BEND, QUIVER
  *   MIDI in    notes from USB or the TRS jack play the object in hand, with their velocity
  *
  * Rules of the road (the chip has no FPU and no libgcc): integers only, no float, no 64-bit division.
@@ -513,7 +513,7 @@ static int lfo_tick(uint32_t bpm, uint32_t pul, uint32_t shp, uint32_t sea, uint
  * after them is the hand: the object just found, not yet kept. */
 #define NKIT 8u
 enum { G_ROCK, G_STICK, G_LEAF, G_PLANT, NGRP };
-typedef struct { uint8_t on, grp, siz, mat, hol, stk, att, hld, dec, lvl, stp, hit, rot, rat, chc, wan, seed[4]; } obj_t;
+typedef struct { uint8_t on, grp, siz, mat, hol, stk, att, hld, dec, lvl, stp, hit, rot, rat, chc, wan, seed[4], lft, lfr, lfd, lfs; } obj_t;
 #define NCHG 11u
 static const uint8_t CHG_N[NCHG] = {0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16};   /* CHORDS: pulses a chord; 0: HOLD */
 #define NATT 11u
@@ -529,25 +529,38 @@ static struct {
 enum { F_OCT, F_CH, F_BPM, F_SPL, F_TNC, F_SCL, F_PUL, F_SHP, F_SEA, F_ROO, F_CHG, F_CUT, F_RES, F_SPC, F_MIX, F_GRP, F_CUR,
        F_G,                                     /* (the settings end; from here the object's own) */
        F_SIZ = F_G, F_MAT, F_HOL, F_STK, F_ATT, F_HLD, F_DEC, F_LVL, F_STP, F_HIT, F_ROT, F_RAT, F_CHC, F_WAN,
+       F_LFT, F_LFR, F_LFD, F_LFS,                 /* (the object's LFO: after its seed) */
        F_N, F_CPU = F_N, F_NONE };
+/* an object's LFO: one of its settings moves by itself, so no two hits (or bars) are alike. MOVES: which; EVERY: the
+ * wave's length in beats; DEPTH: how far (at the top, half the setting's range either way); WAVE: SINE, DRIFT (a
+ * smooth random wander) or DICE (a new throw each hit; for the cycle's settings, each time round) */
+#define NLFT 13u
+#define NLFS 3u
+static const char *const LFS_NAME[NLFS] = {"SINE", "DRIFT", "DICE"};
 static const uint8_t CFG_MIN[F_N] = {0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0};
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0};
 static const uint8_t CFG_MAX[F_N] = {255, 16, 200, NSPELL - 1u, 11, 11, NPULSE - 1u, NSHAPE - 1u, NSEASON - 1u, NSEASON - 1u,
     NCHG - 1u, NCUT - 1u, NRES - 1u, NSPACE - 1u, NMIX - 1u, NGRP - 1u, NKIT,
-    20, 20, 20, 20, NATT - 1u, NHLD - 1u, NDEC - 1u, 20, 32, 32, 31, NRATE - 1u, 20, 20};
+    20, 20, 20, 20, NATT - 1u, NHLD - 1u, NDEC - 1u, 20, 32, 32, 31, NRATE - 1u, 20, 20,
+    NLFT - 1u, NPULSE - 1u, 20, NLFS - 1u};
 static const uint8_t SET_DEF[F_G] = {0, 0, 100, 0, 0, 0, 8, 1, 0, 0, 5, NCUT - 1u, 0, 4, 3, G_ROCK, NKIT};
 static const char *const F_NAME[F_N + 2] = {"OCT", "CH", "TEMPO", "SPELL", "TONIC", "SCALE", "PULSE", "SHAPE", "SEASON", "ROOTS",
     "CHORDS", "FILTER", "RES", "SPACE", "MIX", "FIND", "OBJECT",
     "SIZE", "MATTER", "HOLLOW", "STRIKE", "ATTACK", "HOLD", "DECAY", "LEVEL", "STEPS", "HITS", "ROTATE", "RATE", "CHANCE",
-    "WANDER", "CPU", ""};
+    "WANDER", "MOVES", "EVERY", "DEPTH", "WAVE", "CPU", ""};
 static const char *const GRP_NAME[NGRP] = {"ROCK", "STICK", "LEAVES", "PLANT"};
 static const char *const GRP_FIND[NGRP] = {"ROCKS", "STICKS", "LEAVES", "PLANTS"};
 static const char *const PLANT_NAME[4] = {"STALK", "SAP", "BEND", "QUIVER"};   /* a plant's four HOME knobs: its own */
 #define HAND (&set.kit[NKIT])
 #define CUR (&set.kit[set.cur])
+static uint8_t *obj_fp(const obj_t *o, uint32_t f)   /* an object's setting: its knobs in a row, then (past the seed) its LFO */
+{
+    return (uint8_t *)o + (f < F_LFT ? 2u + (f - F_SIZ) : 20u + (f - F_LFT));
+}
+static const uint8_t LFO_F[NLFT] = {F_NONE, F_SIZ, F_MAT, F_HOL, F_STK, F_ATT, F_HLD, F_DEC, F_LVL, F_HIT, F_ROT, F_CHC, F_WAN};   /* MOVES */
 static uint8_t *fp(uint32_t f)                  /* where a setting lives: the settings, or the object in hand */
 {
-    return f < F_G ? (uint8_t *)&set + f : (uint8_t *)CUR + 2u + (f - F_SIZ);
+    return f < F_G ? (uint8_t *)&set + f : obj_fp(CUR, f);
 }
 static uint32_t cfg_max(uint32_t f)             /* the top of a setting, some of them by another */
 {
@@ -558,13 +571,13 @@ static uint32_t cfg_max(uint32_t f)             /* the top of a setting, some of
 }
 /* the pages: HOME (the object's sound); ENV; ARP 1 (the cycle), 2 (chance, wander); FX; GLO (the tempo and the
  * harmony's pace); SEL (season, roots, shape) */
-enum { P_HOME, P_ENV, P_ARP1, P_ARP2, P_FX, P_GLO, P_SEL, P_EDIT, NPAGE };
-static const char *const PAGE_NAME[NPAGE] = {"", "ENV", "ARP", "ARP 2", "FX", "GLO", "SEL", "EDIT"};
+enum { P_HOME, P_ENV, P_ARP1, P_ARP2, P_FX, P_GLO, P_SEL, P_LFO, NPAGE };
+static const char *const PAGE_NAME[NPAGE] = {"", "ENV", "ARP", "ARP 2", "FX", "GLO", "SEL", "LFO"};
 static uint32_t page_field(uint32_t page, uint32_t k)
 {
     static const uint8_t PF[NPAGE][4] = {{F_SIZ, F_MAT, F_HOL, F_STK}, {F_ATT, F_HLD, F_DEC, F_LVL}, {F_STP, F_HIT, F_ROT, F_RAT},
-        {F_CHC, F_WAN, F_NONE, F_NONE}, {F_CUT, F_RES, F_SPC, F_MIX}, {F_BPM, F_PUL, F_CHG, F_TNC}, {F_SEA, F_ROO, F_SHP, F_NONE},
-        {F_GRP, F_NONE, F_NONE, F_NONE}};
+        {F_CHC, F_WAN, F_NONE, F_NONE}, {F_CUT, F_RES, F_SPC, F_MIX}, {F_BPM, F_PUL, F_CHG, F_TNC}, {F_SEA, F_ROO, F_SHP, F_SCL},
+        {F_LFT, F_LFR, F_LFD, F_LFS}};
     uint32_t f = PF[page][k];
     return f >= F_G && f < F_N && !CUR->on ? F_NONE : f;   /* (nothing in hand: nothing to turn) */
 }
@@ -590,6 +603,7 @@ static void find(obj_t *o, uint32_t grp)
     o->on = 1; o->grp = (uint8_t)grp;
     o->siz = (uint8_t)(4u + rnd(13u)); o->mat = (uint8_t)(2u + rnd(17u)); o->hol = (uint8_t)rnd(21u); o->stk = (uint8_t)(3u + rnd(16u));
     o->att = 0; o->hld = 0; o->lvl = 16; o->rat = 3;   /* (the cycle in sixteenths) */
+    o->lft = 0; o->lfr = 6; o->lfd = 8; o->lfs = 2;    /* (its LFO off; ready as DICE) */
     if (grp == G_PLANT) {                       /* a plant: the whole range of every knob, so no two alike */
         o->siz = (uint8_t)rnd(21u); o->mat = (uint8_t)rnd(21u); o->hol = (uint8_t)rnd(21u); o->stk = rnd(5u) < 2u ? 0u : (uint8_t)rnd(21u);
         o->att = rnd(4u) ? 0u : (uint8_t)rnd(8u); o->hld = rnd(3u) ? 0u : (uint8_t)rnd(6u);
@@ -643,22 +657,42 @@ static uint32_t band_f(int32_t note)            /* a band-pass's centre from a n
     uint32_t f = (uint32_t)(((uint64_t)note_inc((uint32_t)(note < 12 ? 12 : note > 124 ? 124 : note)) * 205887u) >> 32);
     return f < 200u ? 200u : f > 30000u ? 30000u : f;
 }
+static uint32_t tick_next, tick_n;              /* the cycles' clock: the next tick's time (ms x16); ticks since PLAY (24 a beat) */
+static uint8_t dice_hit[NKIT + 1u], dice_cyc[NKIT + 1u];   /* each place's throw: new after every hit; new each time its cycle comes round */
+static int32_t lfo_wave(uint32_t slot, int cyc) /* an object's LFO now: -256 .. 256 */
+{
+    const obj_t *o = &set.kit[slot];
+    uint32_t per = PULSE_Q[o->lfr] * 6u, t = run ? tick_n : fm1_ms * set.bpm / 2500u, i = t / per, ph = t % per;   /* in ticks */
+    int32_t a, b;
+    if (o->lfs == 0u) return sine(ph * (0xFFFFFFFFu / per)) >> 7;
+    if (o->lfs == 2u) return (int32_t)(cyc ? dice_cyc[slot] : dice_hit[slot]) * 2 - 255;
+    a = (int32_t)(hsh(obj_seed(o) + i) & 511u) - 256; b = (int32_t)(hsh(obj_seed(o) + i + 1u) & 511u) - 256;
+    return a + (b - a) * (int32_t)ph / (int32_t)per;
+}
+static uint32_t eff(uint32_t slot, uint32_t f)  /* an object's setting as it sounds now: its value, moved by its LFO if that is its target */
+{
+    const obj_t *o = &set.kit[slot];
+    int32_t v = *obj_fp(o, f), lo = CFG_MIN[f], hi = f == F_HIT ? o->stp : f == F_ROT ? o->stp - 1 : CFG_MAX[f];
+    if (!o->lft || LFO_F[o->lft] != f || !o->lfd || (f == F_HIT && !v)) return (uint32_t)v;   /* (silenced stays silent) */
+    v += lfo_wave(slot, f >= F_STP) * (hi - lo) * (int32_t)o->lfd / 10240;
+    return (uint32_t)(v < lo ? lo : v > hi ? hi : v);
+}
 static const int8_t GOFF[NGRP] = {-24, 12, 0, 0};  /* where each kind sits: rocks two octaves under the keys, sticks one over */
 static const uint16_t VGAIN[NGRP] = {28000, 22000, 26000, 26000};   /* a hit's top level, Q15 */
 static uint32_t ages, hit_ms[NKIT + 1u];        /* when each place last sounded (the screen) */
 static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
 {
     const obj_t *o = &set.kit[slot];
-    int32_t S = o->siz, M = o->mat, H = o->hol, K = o->stk, note, att_ms, ix;
+    int32_t S = (int32_t)eff(slot, F_SIZ), M = (int32_t)eff(slot, F_MAT), H = (int32_t)eff(slot, F_HOL), K = (int32_t)eff(slot, F_STK), note, att_ms, ix;
     uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     vpar_t p = {0};
     if (!o->on || !vel) return;
     note = (int32_t)degrees(keynote, o->grp == G_PLANT ? 0 : (10 - S) * 7 / 10) + GOFF[o->grp];
     note = note < 12 ? 12 : note > 119 ? 119 : note;
     p.inc = note_inc((uint32_t)note);
-    p.peak = (int32_t)((uint32_t)VGAIN[o->grp] * o->lvl / 20u * (60u + vel) / 187u);
-    att_ms = ATT_MS[o->att];
-    ix = (int32_t)(DEC0 + o->dec) + (o->grp == G_PLANT ? 0 : (S - 10) / 4);
+    p.peak = (int32_t)((uint32_t)VGAIN[o->grp] * eff(slot, F_LVL) / 20u * (60u + vel) / 187u);
+    att_ms = ATT_MS[eff(slot, F_ATT)];
+    ix = (int32_t)(DEC0 + eff(slot, F_DEC)) + (o->grp == G_PLANT ? 0 : (S - 10) / 4);
     p.mdk = DK[ix < 0 ? 0 : ix > (int32_t)NDK - 1 ? (int32_t)NDK - 1 : ix];
     p.gpk = 65536u;
     switch (o->grp) {
@@ -744,7 +778,7 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
         break;
     }
     p.att = (uint32_t)att_ms * 2756u / 1000u;
-    p.hold = (uint32_t)HLD_MS[o->hld] * 2756u / 1000u;
+    p.hold = (uint32_t)HLD_MS[eff(slot, F_HLD)] * 2756u / 1000u;
     for (v = 0; v < NV; v++) {                  /* a silent voice, else the oldest */
         uint32_t score = voice[v].stage || voice[v].trig != voice[v].tseen ? 0x80000000u + voice[v].age : 0u;   /* (a hit the audio has not taken yet counts: two hits at once get a voice each) */
         if (score < best) { best = score; pick = v; }
@@ -754,6 +788,7 @@ static void strike(uint32_t slot, uint32_t keynote, uint32_t vel)
     voice[pick].age = ++ages;
     voice[pick].trig++;                         /* (last: the audio takes the numbers with it) */
     hit_ms[slot] = fm1_ms ? fm1_ms : 1u;
+    dice_hit[slot] = (uint8_t)rnd(256u);        /* (the next hit's throw) */
 #ifdef DINGHY_HOST
     printf("%7u ms  %s %u: note %d, vel %u, voice %u\n", (unsigned)fm1_ms, GRP_NAME[o->grp], (unsigned)slot, (int)note, (unsigned)vel, (unsigned)pick);
 #endif
@@ -771,7 +806,6 @@ static int quiet(void)                          /* nothing sounds, not even a ta
  * clock of 24 ticks a beat, so they stay in step whatever their rates and lengths, and an object kept while the
  * cycles run falls straight in. A hit plays the chord's root nearest the middle of the keys; WANDER lets it stray to
  * the chord's other notes, and now and then an octave away. */
-static uint32_t tick_next, tick_n;              /* the next tick's time (ms x16); ticks since PLAY */
 static int euclid(uint32_t i, uint32_t steps, uint32_t hits, uint32_t rot)   /* step i is a hit */
 {
     if (!hits) return 0;
@@ -787,14 +821,16 @@ static void cycle_tick(void)
     while ((int32_t)(now - tick_next) >= 0) {
         for (s = 0; s <= NKIT; s++) {
             const obj_t *o = &set.kit[s];
-            uint32_t div = 24u / RATE_N[o->rat], st, k = 0, n;
+            uint32_t div = 24u / RATE_N[o->rat], st, k = 0, n, wan;
             if (!o->on || tick_n % div) continue;
             st = tick_n / div % o->stp;
-            if (!euclid(st, o->stp, o->hit, o->rot) || rnd(20u) >= o->chc) continue;
-            if (rnd(20u) < o->wan) k = rnd(4u);
+            if (st == 0u) dice_cyc[s] = (uint8_t)rnd(256u);   /* (round again: a new throw for the cycle's settings) */
+            if (!euclid(st, o->stp, eff(s, F_HIT), eff(s, F_ROT)) || rnd(20u) >= eff(s, F_CHC)) continue;
+            wan = eff(s, F_WAN);
+            if (rnd(20u) < wan) k = rnd(4u);
             n = (uint32_t)((int32_t)65 + 12 * (int8_t)set.oct);   /* F4, the middle of the keys: the nearest below or just above */
             while (n % 12u != cpc(chord_now, k)) n--;
-            if (o->wan > 10u && !rnd(6u)) n += rnd(2u) ? 12u : (uint32_t)-12;
+            if (wan > 10u && !rnd(6u)) n += rnd(2u) ? 12u : (uint32_t)-12;
             strike(s, n, st == 0u ? 127u : 70u + rnd(40u));
         }
         tick_n++;
@@ -965,19 +1001,46 @@ static void draw_env(const obj_t *o)            /* ENV: the envelope as a line: 
     }
     cv_blit(0, OB_Y);
 }
-static void draw_find(void)                     /* EDIT: the four kinds; the one REC finds bright */
+static void draw_find(void)                     /* HOME, top left: the four kinds; the one REC finds bright (PRESETS) */
 {
     uint32_t g;
-    cv_begin(240, OB_H, C_BLACK);
+    cv_begin(68, 20, C_BLACK);
     for (g = 0; g < NGRP; g++) {
-        int32_t x = (int32_t)g * 60, l = g == set.grp ? 200 : 55;
-        uint16_t c = tone(g, l);
-        if (g == G_ROCK) { cv_rect(x + 20, 38, 20, 24, c); cv_rect(x + 16, 44, 28, 12, c); }
-        else if (g == G_STICK) { int32_t j; for (j = 0; j < 4; j++) cv_line(x + 14, 60 + j, x + 46, 40 + j, c); }
-        else if (g == G_LEAF) { cv_rect(x + 18, 50, 8, 8, c); cv_rect(x + 30, 40, 8, 8, c); cv_rect(x + 36, 54, 8, 8, c); }
-        else { cv_rect(x + 29, 44, 2, 20, c); cv_ell(x + 30, 38, 5, 5, c, 0); cv_line(x + 30, 54, x + 38, 48, c); cv_line(x + 30, 58, x + 22, 52, c); }
-        cv_text(x + (60 - text_w(&FONT_S, GRP_FIND[g])) / 2, 78, &FONT_S, GRP_FIND[g], g == set.grp ? c : C_OFF);
-        if (g == set.grp) cv_rect(x + 14, 98, 32, 2, c);
+        int32_t x = (int32_t)g * 17;
+        uint16_t c = tone(g, g == set.grp ? 220 : 50);
+        if (g == G_ROCK) { cv_rect(x + 4, 3, 8, 10, c); cv_rect(x + 2, 5, 12, 6, c); }
+        else if (g == G_STICK) { cv_line(x + 2, 12, x + 13, 4, c); cv_line(x + 2, 13, x + 13, 5, c); cv_line(x + 3, 14, x + 14, 6, c); }
+        else if (g == G_LEAF) { cv_rect(x + 2, 9, 4, 4, c); cv_rect(x + 7, 4, 4, 4, c); cv_rect(x + 10, 10, 4, 4, c); }
+        else { cv_rect(x + 7, 7, 2, 8, c); cv_rect(x + 5, 2, 6, 5, c); cv_rect(x + 9, 10, 4, 2, c); cv_rect(x + 3, 12, 4, 2, c); }
+        if (g == set.grp) cv_rect(x + 2, 17, 12, 2, c);
+    }
+    cv_blit(4, 2);
+}
+static void draw_lfo(uint32_t slot)             /* LFO: its wave over two lengths, as deep as DEPTH; where it is now */
+{
+    const obj_t *o = &set.kit[slot];
+    int32_t x, py = 0, h = 6 + (int32_t)o->lfd * 2, mid = 60;
+    uint32_t per = PULSE_Q[o->lfr] * 6u, t = run ? tick_n : fm1_ms * set.bpm / 2500u;
+    uint16_t c;
+    cv_begin(240, OB_H, C_BLACK);
+    if (o->on) {
+        c = tone(o->grp, o->lft ? 170 : 55);
+        cv_line(20, mid, 220, mid, RGB(45, 45, 45));
+        for (x = 0; x <= 200; x++) {
+            int32_t y;
+            if (o->lfs == 0u) y = sine((uint32_t)x * (0xFFFFFFFFu / 100u)) >> 7;
+            else if (o->lfs == 1u) {
+                int32_t a = (int32_t)(hsh(obj_seed(o) + (uint32_t)(x / 50)) & 511u) - 256, b = (int32_t)(hsh(obj_seed(o) + (uint32_t)(x / 50) + 1u) & 511u) - 256;
+                y = a + (b - a) * (x % 50) / 50;
+            } else y = (int32_t)(hsh(obj_seed(o) + (uint32_t)(x / 20)) & 511u) - 256;
+            y = mid - y * h / 256;
+            if (x) cv_line(20 + x - 1, py, 20 + x, y, c);
+            py = y;
+        }
+        if (o->lft && o->lfs != 2u) {           /* where it is now (DICE has no place: it is thrown) */
+            x = 20 + (int32_t)(t % (per * 2u) * 200u / (per * 2u));
+            cv_line(x, mid - h - 6, x, mid + h + 6, tone(o->grp, 255));
+        }
     }
     cv_blit(0, OB_Y);
 }
@@ -1018,7 +1081,7 @@ static void arp_pt(uint32_t i, uint32_t n, int32_t r, int32_t *x, int32_t *y)
 static void draw_arp(uint32_t now)
 {
     const obj_t *o = CUR;
-    uint32_t n = o->stp, h = o->hit, ro = o->rot, i, first = n, g = o->grp;
+    uint32_t n = o->stp, h = eff(set.cur, F_HIT), ro = eff(set.cur, F_ROT), i, first = n, g = o->grp;   /* (as its LFO has them now) */
     int fl = run && hit_ms[set.cur] && now - hit_ms[set.cur] < 200u;
     int32_t x, y, x0 = 0, y0 = 0, fx = 0, fy = 0, cur = run ? (int32_t)cyc_step(o) : -1;
     cv_begin(240, OB_H, C_BLACK);
@@ -1086,6 +1149,11 @@ static void fmt_field(char **q, uint32_t f)     /* a setting's value as the pane
     case F_MIX: case F_CHC: case F_LVL: case F_WAN: put_num(q, v * 5u); *(*q)++ = '%'; break;
     case F_TNC: put(q, TONIC_NAME[v]); break;
     case F_GRP: put(q, GRP_FIND[v]); break;
+    case F_SCL: put_num(q, v + 1u); *(*q)++ = '/'; put_num(q, SPELL[set.spl].n); break;
+    case F_LFT: put(q, v ? fname(LFO_F[v]) : "OFF"); break;
+    case F_LFR: put(q, PULSE_LABEL[v]); break;
+    case F_LFD: put_num(q, v * 5u); *(*q)++ = '%'; break;
+    case F_LFS: put(q, LFS_NAME[v]); break;
     case F_HOL:
         if (CUR->grp != G_PLANT) { put_num(q, v); break; }
         if (v != 10u) *(*q)++ = v < 10u ? '-' : '+';   /* a plant's BEND: down or up from the middle */
@@ -1156,9 +1224,9 @@ static int field_turn(uint32_t f, int32_t e)    /* a setting turned e detents; 1
         if (CUR->hit > CUR->stp) CUR->hit = CUR->stp;
         if (CUR->rot >= CUR->stp) CUR->rot = (uint8_t)(CUR->stp - 1u);
     }
-    if (f == F_TNC) cast(set.spl, set.tnc, set.scl);
+    if (f == F_TNC || f == F_SCL) cast(set.spl, set.tnc, set.scl);
     apply();
-    return f == F_TNC;
+    return f == F_TNC || f == F_SCL;
 }
 static void kit_turn(int32_t e)                 /* ALGORITHM: the next (or last) object there is, the hand among them */
 {
@@ -1213,7 +1281,18 @@ static void app_main(void)
     smk_pad_events = 1;                         /* the pads as events (smk_pad_take): they play here */
 #endif
     {                                           /* the settings: loaded, every one in its range, else all the defaults */
-        int ok = !settings_load(&set, sizeof set) && (int8_t)set.oct >= -2 && (int8_t)set.oct <= 2;
+        static uint8_t old[F_G + (NKIT + 1u) * 20u];   /* the layout before the objects had an LFO: 20 bytes an object */
+        int ok = !settings_load(&set, sizeof set);
+        if (!ok && !settings_load(old, sizeof old)) {   /* that one: carried over, the kit kept, its LFOs off */
+            for (k = 0; k < F_G; k++) ((uint8_t *)&set)[k] = old[k];
+            for (k = 0; k <= NKIT; k++) {
+                uint32_t i;
+                for (i = 0; i < 20u; i++) ((uint8_t *)&set.kit[k])[i] = old[F_G + k * 20u + i];
+                set.kit[k].lft = 0; set.kit[k].lfr = 6; set.kit[k].lfd = 8; set.kit[k].lfs = 2;
+            }
+            ok = 1;
+        }
+        ok = ok && (int8_t)set.oct >= -2 && (int8_t)set.oct <= 2;
         for (k = 1; ok && k < F_G; k++) ok = *fp(k) >= CFG_MIN[k] && *fp(k) <= CFG_MAX[k];
         if (ok) ok = set.scl < SPELL[set.spl].n;
         for (k = 0; ok && k <= NKIT; k++) {
@@ -1221,7 +1300,7 @@ static void app_main(void)
             uint32_t f;
             if (!o->on) continue;
             ok = o->on == 1u && o->grp < NGRP && o->hit <= o->stp && o->rot < o->stp;
-            for (f = F_SIZ; ok && f < F_N; f++) ok = ((const uint8_t *)o)[2u + f - F_SIZ] >= CFG_MIN[f] && ((const uint8_t *)o)[2u + f - F_SIZ] <= CFG_MAX[f];
+            for (f = F_SIZ; ok && f < F_N; f++) ok = *obj_fp(o, f) >= CFG_MIN[f] && *obj_fp(o, f) <= CFG_MAX[f];
         }
         if (!ok) {
             for (k = 0; k < sizeof set; k++) ((uint8_t *)&set)[k] = 0;
@@ -1283,7 +1362,7 @@ static void app_main(void)
         if (b & (1u << BTN_FX)) page = page == P_FX ? P_HOME : P_FX;
         if (b & (1u << BTN_GLO)) page = page == P_GLO ? P_HOME : P_GLO;
         if (b & (1u << BTN_SEL)) page = page == P_SEL ? P_HOME : P_SEL;
-        if (b & (1u << BTN_EDIT)) page = page == P_EDIT ? P_HOME : P_EDIT;   /* EDIT: what REC finds */
+        if (b & (1u << BTN_LFO)) page = page == P_LFO ? P_HOME : P_LFO;   /* LFO: the object's own */
         if (b & (1u << BTN_REC)) { rec_t = fm1_ms; rec_done = 0; }   /* REC: a tap finds an object; held: the one before */
         if (fm1_in.buttons >> BTN_REC & 1u && !rec_done && fm1_ms - rec_t > 600u) {
             rec_done = 1;
@@ -1319,12 +1398,10 @@ static void app_main(void)
             say_at(0u, SPELL[spell_now].name);
             turn_ms = fm1_ms; dirty = 1; t_change = fm1_ms;
         }
-        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {    /* PRESETS: the spell's next or last scale */
-            uint32_t n = SPELL[spell_now].n;
-            cast(spell_now, tonic, (scale_now + (uint32_t)((e % (int32_t)n) + (int32_t)n)) % n);
-            set.scl = (uint8_t)scale_now;
-            say_scale();
-            turn_ms = fm1_ms; dirty = 1; t_change = fm1_ms;
+        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {    /* PRESETS: the kind REC finds, round the four */
+            set.grp = (uint8_t)(((int32_t)set.grp + e % (int32_t)NGRP + (int32_t)NGRP) % (int32_t)NGRP);
+            say(GRP_FIND[set.grp]);
+            dirty = 1; t_change = fm1_ms;
         }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {  /* ALGORITHM: round the kit */
             kit_turn(e); say_cur(); dirty = 1; t_change = fm1_ms;
@@ -1370,7 +1447,7 @@ static void app_main(void)
         fm1_led_key(BTN_FX, page == P_FX);
         fm1_led_key(BTN_GLO, page == P_GLO);
         fm1_led_key(BTN_SEL, page == P_SEL);
-        fm1_led_key(BTN_EDIT, page == P_EDIT);
+        fm1_led_key(BTN_LFO, page == P_LFO);
         fm1_led_key(BTN_REC, fm1_in.buttons >> BTN_REC & 1u);
         fm1_led_key(BTN_SAVE, set.cur == NKIT && HAND->on);   /* lit: the object in hand is not kept yet */
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
@@ -1391,11 +1468,12 @@ static void app_main(void)
             top_drawn = pic_drawn = kit_drawn = knobs_drawn = label_drawn = label2_drawn = ~0u;
         }
         shown = page;
-        if ((st = set.bpm | page << 8 | (uint32_t)set.cur << 12 | (uint32_t)CUR->on << 16 | (uint32_t)CUR->grp << 17) != top_drawn) {
+        if ((st = set.bpm | page << 8 | (uint32_t)set.cur << 12 | (uint32_t)CUR->on << 16 | (uint32_t)CUR->grp << 17 | (uint32_t)set.grp << 20) != top_drawn) {
             char c[16], *q = c;                 /* the top line: the tempo; the kind (HOME) or the page; the place in the kit */
             top_drawn = st;
             put_num(&q, set.bpm); put(&q, " BPM"); *q = 0;
-            draw_text_box(4, 4, 68, &FONT_S, c, C_OFF, 0);
+            if (page == P_HOME) draw_find();    /* HOME: what REC finds, in place of the tempo (that is on GLO) */
+            else draw_text_box(4, 4, 68, &FONT_S, c, C_OFF, 0);
             draw_text_box(72, 4, 96, &FONT_S, page != P_HOME ? PAGE_NAME[page] : CUR->on ? GRP_NAME[CUR->grp] : "", page == P_HOME && CUR->on ? tone(CUR->grp, 160) : C_ACC, 1);
             q = c;
             if (set.cur < NKIT) { put_num(&q, set.cur + 1u); put(&q, "/8"); } else put(&q, CUR->on ? "NEW" : "");
@@ -1405,15 +1483,16 @@ static void app_main(void)
         if (now - pic_t >= 40u) {               /* the picture: at most 25 a second */
             int fl = hit_ms[set.cur] && now - hit_ms[set.cur] < 110u;
             if (page == P_ARP1 || page == P_ARP2) {
-                st = hsh(obj_seed(CUR) ^ (uint32_t)CUR->stp << 8 ^ (uint32_t)CUR->hit << 14 ^ (uint32_t)CUR->rot << 20 ^ (uint32_t)CUR->chc << 26)
+                st = hsh(obj_seed(CUR) ^ (uint32_t)CUR->stp << 8 ^ eff(set.cur, F_HIT) << 14 ^ eff(set.cur, F_ROT) << 20 ^ (uint32_t)CUR->chc << 26)
                      + (run ? 1000u + cyc_step(CUR) : 0u) + (uint32_t)(run && hit_ms[set.cur] && now - hit_ms[set.cur] < 200u) * 77u + page * 5u + CUR->on;
                 if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_arp(now); }
             } else if (page == P_ENV) {
                 st = 0x60000000u + CUR->att + CUR->hld * 16u + CUR->dec * 256u + CUR->lvl * 16384u + CUR->grp * 0x80000u + CUR->on * 0x400000u + set.cur * 0x800000u;
                 if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_env(CUR); }
-            } else if (page == P_EDIT) {
-                st = 0x70000000u + set.grp;
-                if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_find(); }
+            } else if (page == P_LFO) {
+                st = 0x70000000u + CUR->lft + CUR->lfr * 16u + CUR->lfd * 256u + CUR->lfs * 8192u + CUR->on * 32768u + set.cur * 65536u + (obj_seed(CUR) & 0xF00000u)
+                     + (CUR->lft && CUR->lfs != 2u ? ((run ? tick_n : fm1_ms * set.bpm / 2500u) % (PULSE_Q[CUR->lfr] * 12u) * 200u / (PULSE_Q[CUR->lfr] * 12u)) << 24 : 0u);
+                if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_lfo(set.cur); }
             } else if (page == P_GLO || page == P_SEL) {
                 st = 0x50000000u + spell_now + scale_now * 8u + tonic * 128u + (run ? 2048u + chord_now * 4096u : 0u) + cpu_pct * 65536u + kl * 0x1000000u;
                 if (st != pic_drawn) { pic_drawn = st; pic_t = now; draw_spell(cpu_pct, (int)kl); }

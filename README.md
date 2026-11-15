@@ -11,10 +11,11 @@ the spell's scale; every object has a Euclidean cycle of its own, and PLAY runs 
 | Keys | play the object in hand, in the scale |
 | F#5 | the object in hand silent (its hits to 0); again: back |
 | White keys, on ARP | set the hits, 1..16, and show them |
-| REC | a tap finds a new object of the kind chosen on EDIT; held: the one before comes back |
+| REC | a tap finds a new object of the kind PRESETS chose; held: the one before comes back |
 | SAVE | a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand |
 | ALGORITHM | round the kit's objects |
-| SELECT, PRESETS | the spell, its scales |
+| SELECT | the spell |
+| PRESETS | what REC finds: rocks, sticks, leaves, plants (HOME, top left) |
 | PLAY | the cycles run / stop |
 | OCT-, OCT+ | the octave |
 
@@ -27,8 +28,8 @@ the spell's scale; every object has a Euclidean cycle of its own, and PLAY runs 
 | ARP (again) | Chance | Wander | | |
 | FX | Filter | Resonance | Space | Mix |
 | GLO | Tempo | Pulse | Chords | Tonic |
-| SEL | Season | Roots | Shape | |
-| EDIT | Find (rocks, sticks, leaves, plants) | | | |
+| SEL | Season | Roots | Shape | Scale |
+| LFO (the object's own) | Moves (which setting) | Every (beats) | Depth | Wave (sine, drift, dice) |
 
 ## Install
 
