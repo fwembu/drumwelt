@@ -6,7 +6,7 @@
  *
  *   keys       play the object in hand, in the scale; F#5: the object silent (its hits to 0), again: back
  *              on ARP the white keys set the hits (1..16) and show them; the other black keys wait for a job
- *   REC        a tap finds a new object of the kind PRESETS chose (HOME, top left); held: the one before it comes back
+ *   REC        a tap finds a new object of the kind PRESETS chose (HOME, top middle); held: the one before it comes back
  *   SAVE       a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand
  *   ALGORITHM  round the kit's objects (and the one in hand)
  *   SELECT     the spell; PRESETS what REC finds: rocks, sticks, leaves, plants; OCT- OCT+ the octave; PLAY the cycles
@@ -1001,7 +1001,7 @@ static void draw_env(const obj_t *o)            /* ENV: the envelope as a line: 
     }
     cv_blit(0, OB_Y);
 }
-static void draw_find(void)                     /* HOME, top left: the four kinds; the one REC finds bright (PRESETS) */
+static void draw_find(void)                     /* HOME, top middle: the four kinds; the one REC finds bright (PRESETS) */
 {
     uint32_t g;
     cv_begin(68, 20, C_BLACK);
@@ -1014,7 +1014,7 @@ static void draw_find(void)                     /* HOME, top left: the four kind
         else { cv_rect(x + 7, 7, 2, 8, c); cv_rect(x + 5, 2, 6, 5, c); cv_rect(x + 9, 10, 4, 2, c); cv_rect(x + 3, 12, 4, 2, c); }
         if (g == set.grp) cv_rect(x + 2, 17, 12, 2, c);
     }
-    cv_blit(4, 2);
+    cv_blit(86, 2);
 }
 static void draw_lfo(uint32_t slot)             /* LFO: its wave over two lengths, as deep as DEPTH; where it is now */
 {
@@ -1472,9 +1472,9 @@ static void app_main(void)
             char c[16], *q = c;                 /* the top line: the tempo; the kind (HOME) or the page; the place in the kit */
             top_drawn = st;
             put_num(&q, set.bpm); put(&q, " BPM"); *q = 0;
-            if (page == P_HOME) draw_find();    /* HOME: what REC finds, in place of the tempo (that is on GLO) */
-            else draw_text_box(4, 4, 68, &FONT_S, c, C_OFF, 0);
-            draw_text_box(72, 4, 96, &FONT_S, page != P_HOME ? PAGE_NAME[page] : CUR->on ? GRP_NAME[CUR->grp] : "", page == P_HOME && CUR->on ? tone(CUR->grp, 160) : C_ACC, 1);
+            draw_text_box(4, 4, 68, &FONT_S, c, C_OFF, 0);
+            if (page == P_HOME) draw_find();    /* HOME: what REC finds, in the middle (the object's picture says what it is) */
+            else draw_text_box(72, 4, 96, &FONT_S, PAGE_NAME[page], C_ACC, 1);
             q = c;
             if (set.cur < NKIT) { put_num(&q, set.cur + 1u); put(&q, "/8"); } else put(&q, CUR->on ? "NEW" : "");
             *q = 0;

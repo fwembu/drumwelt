@@ -15,7 +15,7 @@ the spell's scale; every object has a Euclidean cycle of its own, and PLAY runs 
 | SAVE | a tap keeps the object in hand in the kit; held on a kit object: out of the kit, back in hand |
 | ALGORITHM | round the kit's objects |
 | SELECT | the spell |
-| PRESETS | what REC finds: rocks, sticks, leaves, plants (HOME, top left) |
+| PRESETS | what REC finds: rocks, sticks, leaves, plants (HOME, top middle) |
 | PLAY | the cycles run / stop |
 | OCT-, OCT+ | the octave |
 
